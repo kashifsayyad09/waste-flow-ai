@@ -1,0 +1,20 @@
+# secrets
+.env
+backend/.env
+
+# python
+backend/venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# node
+node_modules/
+dist/
+*.tsbuildinfo
+
+# nginx runtime files
+nginx/logs/*
+!nginx/logs/.gitkeep
+nginx/*_temp/
