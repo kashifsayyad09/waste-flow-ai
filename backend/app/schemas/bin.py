@@ -1,13 +1,15 @@
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 WasteType = Literal["organic", "plastic", "paper", "glass", "mixed"]
 BinStatus = Literal["normal", "warning", "critical"]
 
 
 class Bin(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: str
     name: str
     location: str

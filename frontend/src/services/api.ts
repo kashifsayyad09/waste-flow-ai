@@ -19,7 +19,13 @@ async function get<T>(path: string, isValid: (data: unknown) => boolean): Promis
   } catch {
     throw new ApiError(UNREACHABLE);
   }
-  // 5xx from Nginx/Vite proxy means the upstream is down.
+  if (res.status === 503) {
+    // FastAPI is up but its database is not (it never reveals connection details).
+    const body = await res.json().catch(() => null);
+    if (isObject(body) && body.detail === "Database unavailable")
+      throw new ApiError("The API is running but cannot reach its database. Check the RDS instance, its security group and backend/.env.");
+  }
+  // Other 5xx from Nginx/Vite proxy means the upstream is down.
   if (res.status >= 500) throw new ApiError(`${UNREACHABLE} (HTTP ${res.status})`);
   if (!res.ok) throw new ApiError(`The server answered ${res.status} for ${path}.`);
   let data: unknown;
