@@ -52,3 +52,40 @@ def db_client(db_session):
     app.dependency_overrides[get_db] = _use_test_session
     yield TestClient(app)
     app.dependency_overrides.clear()
+
+
+# --- Phase 3 (AI) fixtures -------------------------------------------------------------------------
+from app.ai import rate_limit as _rate_limit  # noqa: E402
+from app.ai.groq_service import GroqService  # noqa: E402
+from app.api.ai_routes import get_groq_service, get_mcp_client  # noqa: E402
+from app.config import Settings, get_settings  # noqa: E402
+
+
+def make_ai_settings(**overrides) -> Settings:
+    base = dict(
+        _env_file=None, groq_api_key="gsk_test_key_not_real", groq_text_model="test-text-model", groq_vision_model="test-vision-model",
+        mcp_server_url="http://127.0.0.1:1/mcp", mcp_api_token="t" * 40, groq_max_retries=0, groq_timeout_seconds=5,
+    )
+    return Settings(**{**base, **overrides})
+
+
+@pytest.fixture(autouse=True)
+def _reset_rate_limiter():
+    _rate_limit.reset()
+    yield
+    _rate_limit.reset()
+
+
+@pytest.fixture
+def ai_client():
+    """Factory: ai_client(settings=..., groq=..., mcp=...) -> TestClient with AI dependencies replaced."""
+    def build(settings: Settings | None = None, groq=None, mcp=None) -> TestClient:
+        app.dependency_overrides[get_settings] = lambda: settings or make_ai_settings()
+        if groq is not None:
+            app.dependency_overrides[get_groq_service] = lambda: groq
+        if mcp is not None:
+            app.dependency_overrides[get_mcp_client] = lambda: mcp
+        return TestClient(app)
+
+    yield build
+    app.dependency_overrides.clear()

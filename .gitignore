@@ -1,10 +1,17 @@
-# secrets
+# secrets (real env files never committed; only *.example is tracked)
 .env
+.env.*
+!.env.example
 backend/.env
+mcp-server/.env
+*.pem
+*.key
 
 # python
 backend/venv/
 venv/
+.venv/
+mcp-server/.venv/
 __pycache__/
 *.pyc
 .pytest_cache/

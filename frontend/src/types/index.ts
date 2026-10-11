@@ -51,3 +51,41 @@ export interface BinRow {
   bin: Bin;
   priority: PriorityResult;
 }
+
+export interface CollectionRecord {
+  id: number;
+  bin_id: string;
+  collected_at: string;
+  collection_status: "completed" | "skipped" | "failed";
+  notes: string | null;
+  created_at: string;
+}
+
+export type DataStatus = "verified" | "partial" | "no_data_used" | "unavailable";
+
+export interface ReferencedBin {
+  bin_id: string;
+  priority_score: number | null;
+  priority_level: PriorityLevel | null;
+}
+
+export interface ChatResponse {
+  status: "ok" | "unavailable";
+  answer: string;
+  referenced_bins: ReferencedBin[];
+  tools_used: string[];
+  data_status: DataStatus;
+  warnings: string[];
+  model: string | null;
+}
+
+export type WasteCategory =
+  | "organic" | "plastic" | "paper_cardboard" | "metal" | "glass" | "electronic" | "hazardous" | "mixed" | "unknown";
+
+export interface ClassificationResult {
+  category: WasteCategory;
+  confidence: number | null;
+  explanation: string;
+  handling_guidance: string;
+  limitations: string[];
+}

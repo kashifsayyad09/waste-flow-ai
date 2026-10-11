@@ -3,6 +3,7 @@
 The schema is owned by schema.sql. Nothing here creates or alters tables.
 """
 import logging
+import os
 from collections.abc import Iterator
 from functools import lru_cache
 
@@ -32,11 +33,7 @@ def build_url(settings: Settings) -> URL:
     )
 
 
-@lru_cache
-def get_engine() -> Engine:
-    settings = get_settings()
-    if not settings.database_configured:
-        raise DatabaseNotConfigured("Set DB_HOST, DB_USER, DB_PASSWORD in backend/.env")
+def build_connect_args(settings: Settings) -> dict:
     connect_args: dict = {
         "connect_timeout": 5,
         "read_timeout": 15,
@@ -44,8 +41,29 @@ def get_engine() -> Engine:
         "init_command": "SET time_zone = '+00:00'",  # timestamps are UTC
     }
     if settings.db_ssl_ca:
+        if not os.path.isfile(settings.db_ssl_ca):
+            raise DatabaseNotConfigured("DB_SSL_CA does not point to an existing file")
+        # With a CA, PyMySQL verifies the server certificate AND its hostname.
         connect_args["ssl"] = {"ca": settings.db_ssl_ca}
-    return create_engine(build_url(settings), pool_pre_ping=True, pool_recycle=280, connect_args=connect_args)
+    elif settings.is_production:
+        raise DatabaseNotConfigured("DB_SSL_CA is required when APP_ENV=production")
+    return connect_args
+
+
+@lru_cache
+def get_engine() -> Engine:
+    settings = get_settings()
+    if not settings.database_configured:
+        raise DatabaseNotConfigured("Set DB_HOST, DB_USER, DB_PASSWORD in backend/.env")
+    return create_engine(
+        build_url(settings),
+        pool_pre_ping=True,
+        pool_recycle=280,  # below RDS/proxy idle timeouts
+        pool_size=settings.db_pool_size,
+        max_overflow=settings.db_max_overflow,
+        pool_timeout=settings.db_pool_timeout,
+        connect_args=build_connect_args(settings),
+    )
 
 
 @lru_cache

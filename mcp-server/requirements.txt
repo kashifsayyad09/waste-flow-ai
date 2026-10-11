@@ -1,0 +1,3 @@
+# The MCP server shares the backend's service layer and therefore its dependencies
+# (mcp, sqlalchemy, pymysql, pydantic-settings, uvicorn, ...).
+-r ../backend/requirements.txt

@@ -1,3 +1,6 @@
+import { useEffect, useState } from "react";
+import { api } from "../services/api";
+import type { CollectionRecord } from "../types";
 import { FillMeter, PriorityBadge, StateMessage, titleCase } from "../components/ui";
 import type { BinRow } from "../types";
 
@@ -6,7 +9,24 @@ interface Props {
   onBack: () => void;
 }
 
+type History = { status: "loading" } | { status: "error"; message: string } | { status: "ready"; records: CollectionRecord[] };
+
+function useCollectionHistory(binId: string | undefined): History {
+  const [history, setHistory] = useState<History>({ status: "loading" });
+  useEffect(() => {
+    if (!binId) return;
+    let cancelled = false;
+    setHistory({ status: "loading" });
+    api.getCollections(binId)
+      .then((records) => !cancelled && setHistory({ status: "ready", records }))
+      .catch((e) => !cancelled && setHistory({ status: "error", message: e instanceof Error ? e.message : "Could not load collection history." }));
+    return () => { cancelled = true; };
+  }, [binId]);
+  return history;
+}
+
 export function BinDetails({ row, onBack }: Props) {
+  const history = useCollectionHistory(row?.bin.id);
   if (!row) {
     return (
       <>
@@ -70,6 +90,23 @@ export function BinDetails({ row, onBack }: Props) {
           </ul>
         </section>
       </div>
+
+      <section className="card" aria-labelledby="hist-title">
+        <h2 id="hist-title">Collection history</h2>
+        {history.status === "loading" && <p className="muted">Loading history…</p>}
+        {history.status === "error" && <p role="alert">{history.message}</p>}
+        {history.status === "ready" && history.records.length === 0 && <p className="muted">No collections recorded for this bin yet.</p>}
+        {history.status === "ready" && history.records.length > 0 && (
+          <ul className="list">
+            {history.records.map((r) => (
+              <li key={r.id}>
+                <span>{new Date(r.collected_at).toLocaleString()}{r.notes ? ` · ${r.notes}` : ""}</span>
+                <span className="row-meta">{titleCase(r.collection_status)}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
     </>
   );
 }

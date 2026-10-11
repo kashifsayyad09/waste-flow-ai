@@ -1,0 +1,33 @@
+# /etc/systemd/system/wasteflow-mcp.service  (BACKEND EC2, Amazon Linux)
+#
+# The MCP server runs on the SAME instance as the FastAPI backend and listens on loopback only,
+# so port 8001 is never reachable from any other machine and needs no security-group rule.
+# It reuses the backend release's virtualenv. Configuration/secrets come ONLY from /etc/wasteflow/mcp.env.
+[Unit]
+Description=WasteFlow AI MCP server (read-only data tools)
+After=network-online.target
+Wants=network-online.target
+Before=wasteflow-backend.service
+
+[Service]
+Type=simple
+User=wasteflow
+Group=wasteflow
+WorkingDirectory=/opt/wasteflow/current/mcp-server
+EnvironmentFile=/etc/wasteflow/mcp.env
+Environment=WASTEFLOW_BACKEND_DIR=/opt/wasteflow/current/backend
+ExecStart=/opt/wasteflow/current/backend/.venv/bin/python -m wasteflow_mcp
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=20
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+ReadOnlyPaths=/opt/wasteflow /etc/wasteflow
+
+[Install]
+WantedBy=multi-user.target

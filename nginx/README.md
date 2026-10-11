@@ -65,7 +65,7 @@ Then open **http://localhost**.
 | http://localhost/docs | Swagger UI *(not proxied by default)* |
 | http://127.0.0.1:8000/docs | Swagger UI, direct to FastAPI |
 
-`http://localhost:5173` also works: Vite forwards `/api` and `/health` to Nginx (`frontend/vite.config.ts`), never straight to FastAPI.
+`http://localhost:5173` also works on its own: the Vite dev proxy (`frontend/vite.config.ts`) forwards `/api` and `/health` straight to FastAPI on `127.0.0.1:8000`. This folder is for **local development only**; the production Nginx config lives in `deploy/nginx/`.
 
 ## Troubleshooting
 

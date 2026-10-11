@@ -1,0 +1,33 @@
+# /etc/systemd/system/wasteflow-backend.service  (BACKEND EC2, Amazon Linux)
+#
+# Paths assume the layout created by deploy/backend/deploy-backend.sh:
+#   /opt/wasteflow/current -> /opt/wasteflow/releases/<timestamp>   (backend/ + .venv inside)
+# Configuration and secrets come ONLY from /etc/wasteflow/backend.env (root:wasteflow, 0640).
+[Unit]
+Description=WasteFlow AI backend (FastAPI / Uvicorn)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=wasteflow
+Group=wasteflow
+WorkingDirectory=/opt/wasteflow/current/backend
+EnvironmentFile=/etc/wasteflow/backend.env
+# HOST/PORT come from the env file. No --reload in production.
+ExecStart=/opt/wasteflow/current/backend/.venv/bin/uvicorn app.main:app --host ${HOST} --port ${PORT} --workers 2 --proxy-headers
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=20
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+ReadOnlyPaths=/opt/wasteflow /etc/wasteflow
+
+[Install]
+WantedBy=multi-user.target

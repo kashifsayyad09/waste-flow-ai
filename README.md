@@ -178,7 +178,7 @@ sudo nginx -p "$PWD/nginx/" -c nginx.conf       # macOS / Linux
 nginx -p "$PWD/nginx/" -c nginx.conf            # Windows PowerShell
 ```
 
-Nginx keeps proxying `/api/*` and `/health` to FastAPI and `/` to Vite, exactly as in Phase 1. Details: [`nginx/README.md`](nginx/README.md).
+Locally, Nginx (optional) proxies `/api/*` and `/health` to FastAPI and `/` to Vite. `npm run dev` on its own also works: the Vite dev proxy forwards `/api` and `/health` straight to FastAPI on `127.0.0.1:8000`. Production uses neither: see [`deploy/README.md`](deploy/README.md). Local Nginx details: [`nginx/README.md`](nginx/README.md).
 
 - App (via Nginx): http://localhost
 - Health: http://localhost/health → `{"status":"ok","database":"connected",...}`
@@ -203,6 +203,21 @@ In a single transaction it inserts the record and, for `completed`, sets the bin
 
 The collection plan is a priority order only; GPS route optimization is a later phase.
 
+## Phase 3: AI
+
+Adds a **Groq-powered AI Collection Assistant** and **waste-photo classification**, with a separate **MCP server** that gives the assistant read-only access to the live RDS data and the deterministic priority engine. The engine still decides all scores; the AI only explains them. Full guide: [`docs/phase3-ai.md`](docs/phase3-ai.md).
+
+```
+React → Nginx → FastAPI ──▶ Groq API
+                   └──▶ MCP server (bearer auth, read-only tools) ──▶ AWS RDS MySQL + priority engine
+```
+
+New endpoints: `POST /api/v1/ai/chat`, `POST /api/v1/ai/classify-waste`, `GET /api/v1/ai/status`. New backend variables: `GROQ_API_KEY`, `GROQ_TEXT_MODEL`, `GROQ_VISION_MODEL`, `MCP_SERVER_URL`, `MCP_API_TOKEN` (placeholders in `backend/.env.example`; the key never reaches the browser). Run the MCP server with `cd mcp-server && python -m wasteflow_mcp`, and check your Groq account with `python backend/scripts/check_groq.py --live`. AI features report "not configured" until the keys and model IDs are set.
+
+## Deployment (AWS)
+
+Production layout is **Frontend EC2 (Nginx + static build) → Backend EC2 (Uvicorn under systemd) → private RDS MySQL**. Full Amazon Linux instructions, security groups, rollback and password-rotation steps: [`deploy/README.md`](deploy/README.md).
+
 ## Tests
 
 ```
@@ -210,6 +225,18 @@ cd backend
 pytest                       # everything; integration tests skip if no database is reachable
 pytest -m "not integration"  # unit tests only, no database needed
 pytest -m integration        # database tests only
+```
+
+MCP server: `cd mcp-server && pytest`.
+
+Frontend (from `frontend/`):
+
+```
+npm ci
+npm run typecheck
+npm test                     # UI tests with fixture API responses
+npm run build
+WASTEFLOW_LIVE_API=http://127.0.0.1:8000 npm test   # same checks against a running, database-backed backend
 ```
 
 - `tests/unit/`: priority engine, API behaviour with sample data, health responses, URL/secret handling, and project rules (no `create_all`, no migration framework, no frontend `.env`).

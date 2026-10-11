@@ -22,11 +22,50 @@ class Settings(BaseSettings):
     db_name: str = "wasteflow"
     db_user: str = ""
     db_password: SecretStr = SecretStr("")
-    db_ssl_ca: str = ""  # optional CA bundle path
+    db_ssl_ca: str = ""  # path to the AWS RDS CA bundle; REQUIRED when APP_ENV=production
+    db_pool_size: int = 5
+    db_max_overflow: int = 5
+    db_pool_timeout: int = 10  # seconds to wait for a free connection
+
+    # --- Phase 3: AI (all optional; features report "not configured" when unset) ---
+    groq_api_key: SecretStr = SecretStr("")
+    groq_text_model: str = ""  # a text/tool-calling model available to YOUR Groq account
+    groq_vision_model: str = ""  # a vision-capable model available to YOUR Groq account
+    groq_base_url: str = ""  # leave empty for the real Groq API; tests point it at a local fake
+    groq_timeout_seconds: float = 30.0
+    groq_max_retries: int = 1
+    mcp_server_url: str = ""  # e.g. http://127.0.0.1:8001/mcp (MCP runs on the backend EC2)
+    mcp_api_token: SecretStr = SecretStr("")
+    mcp_timeout_seconds: float = 20.0
+    ai_max_tool_rounds: int = 4
+    ai_rate_limit_per_minute: int = 20
+    upload_max_bytes: int = 3 * 1024 * 1024  # Groq limits base64 images to 4 MB
 
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+
+    @property
+    def is_production(self) -> bool:
+        return self.app_env.strip().lower() == "production"
+
+    @staticmethod
+    def _set(value: str) -> bool:
+        """True for a real value; empty or <PLACEHOLDER> counts as unset."""
+        value = value.strip()
+        return bool(value) and not value.startswith("<")
+
+    @property
+    def groq_text_ready(self) -> bool:
+        return self._set(self.groq_api_key.get_secret_value()) and self._set(self.groq_text_model)
+
+    @property
+    def groq_vision_ready(self) -> bool:
+        return self._set(self.groq_api_key.get_secret_value()) and self._set(self.groq_vision_model)
+
+    @property
+    def mcp_ready(self) -> bool:
+        return self._set(self.mcp_server_url) and self._set(self.mcp_api_token.get_secret_value())
 
     @property
     def database_configured(self) -> bool:

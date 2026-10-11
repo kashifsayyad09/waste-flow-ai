@@ -101,6 +101,28 @@ h2 { font-size: 36px; margin-bottom: 16px; }
 .state-loading .state-title::after { content: "_"; animation: blink 1s steps(2) infinite; }
 @keyframes blink { 50% { opacity: 0; } }
 
+/* --- AI pages --- */
+.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.chip { background: transparent; border: 2px solid var(--line); padding: 8px 12px; min-height: 44px; text-align: left; font-size: 14px; }
+.chip:hover { border-color: var(--accent); color: var(--accent); }
+.ai-form { display: flex; flex-direction: column; gap: 8px; }
+.ai-form textarea { width: 100%; background: var(--bg); color: var(--text); border: 2px solid var(--line); border-radius: 0; padding: 12px; font: inherit; resize: vertical; }
+.ai-form textarea:focus { border-color: var(--accent); }
+.ai-form-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.ai-output { margin-top: 24px; }
+.answer-block h3 { font-family: var(--font-display); font-weight: 400; font-size: 28px; letter-spacing: 1.1px; margin: 20px 0 8px; }
+.answer { white-space: pre-wrap; max-width: 70ch; margin: 12px 0; }
+.data-status { display: inline-block; padding: 4px 12px; border: 2px solid var(--line); font-size: 14px; }
+.data-verified { border-color: var(--low); color: var(--low); }
+.data-partial, .data-unavailable { border-color: var(--critical); color: var(--critical); }
+.file-row { display: flex; flex-wrap: wrap; gap: 12px; }
+.file-btn { position: relative; display: inline-flex; align-items: center; cursor: pointer; }
+.file-btn:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
+.field-error { color: var(--critical); margin-top: 12px; }
+.preview { margin-top: 20px; display: flex; flex-direction: column; gap: 12px; align-items: flex-start; }
+.preview img { max-width: min(100%, 420px); max-height: 320px; border: 2px solid var(--line); box-shadow: var(--shadow); }
+
 @media (max-width: 1023px) {
   .shell { grid-template-columns: 1fr; }
   .side { position: static; height: auto; padding: 16px; border-right: none; border-bottom: 2px solid var(--surface); }
