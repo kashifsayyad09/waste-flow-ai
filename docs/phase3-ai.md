@@ -162,6 +162,9 @@ Setup steps are in [`deploy/README.md`](../deploy/README.md).
 - The Groq key and MCP token exist only in root-owned env files on the backend EC2 (mode 0640). Give the MCP service a **SELECT-only** database user.
 - Prompt injection: tool results are labelled as data in the system prompt, and the code-level grounding check blocks invented bin IDs regardless of what the model says.
 - **Numbers inside the model's prose are not machine-verified** (only bin IDs are). The `referenced_bins` scores come straight from the engine; if wording and data ever disagree, trust the data panel. Answers are single-turn (no conversation memory).
+- **`httpx2` is intentional.** MCP Python SDK 2.x talks HTTP through `httpx2` (its `streamable_http_client` is typed to take an `httpx2.AsyncClient`), so `backend/app/ai/mcp_client.py` imports `httpx2`. Replacing it with `httpx` breaks the MCP connection. `httpx` is still used by the Groq SDK and the tests; both are declared in `backend/requirements.txt`.
+- Behind an ALB, set `FORWARDED_ALLOW_IPS` (backend env) to the proxies' CIDRs, otherwise all users share one rate-limit bucket.
+- The Nginx template resolves a DNS-name backend (e.g. an internal ALB) at request time via `NGINX_RESOLVER` (default `169.254.169.253`), so ALB IP changes do not cause stale-upstream 502s.
 - The per-client rate limiter is in-memory per process (the production service runs 2 workers), so the effective limit is roughly doubled; it is a cost guard, not a security boundary.
 - There is no user authentication in the application (unchanged from earlier phases), so anyone who can reach the site can use the AI features and spend your Groq quota. Add authentication before exposing it publicly.
 - Image classification is an estimate from one photo and can be wrong; it must not be used to identify hazardous materials.

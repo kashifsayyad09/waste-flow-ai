@@ -15,8 +15,10 @@ KEEP="${KEEP:-5}"
 NGINX_TEMPLATE="${NGINX_TEMPLATE:-$REPO_DIR/deploy/nginx/wasteflow-frontend.conf.template}"
 SKIP_BUILD="${SKIP_BUILD:-no}"      # yes = use a prebuilt dist/ copied from another machine (no Node needed here)
 DIST_DIR="${DIST_DIR:-$REPO_DIR/frontend/dist}"
+NGINX_RESOLVER="${NGINX_RESOLVER:-169.254.169.253}"   # Amazon-provided DNS; used to re-resolve a DNS-name backend (e.g. internal ALB)
 BACKEND_HOST="${BACKEND_HOST:?Set BACKEND_HOST to the backend EC2 PRIVATE IP or private DNS name}"
 
+[[ "$NGINX_RESOLVER" =~ ^[0-9A-Fa-f.:]+$ ]] || { echo "NGINX_RESOLVER must be an IP address"; exit 1; }
 [[ "$BACKEND_HOST" =~ ^[A-Za-z0-9.-]+$ ]] || { echo "BACKEND_HOST must be a hostname or IP"; exit 1; }
 [[ "$BACKEND_HOST" != "localhost" && "$BACKEND_HOST" != 127.* ]] || [[ "${ALLOW_LOCAL_BACKEND:-no}" == "yes" ]] \
   || { echo "BACKEND_HOST must be the backend's private address, not localhost"; exit 1; }
@@ -47,7 +49,7 @@ restore() {
 trap restore ERR
 
 [[ -f "$CONF" ]] && cp -p "$CONF" "$CONF.bak"
-sed -e "s/BACKEND_PRIVATE_HOST/$BACKEND_HOST/g" -e "s#/var/www/wasteflow#$WEB_ROOT#g" "$NGINX_TEMPLATE" > "$CONF"
+sed -e "s/BACKEND_PRIVATE_HOST/$BACKEND_HOST/g" -e "s/NGINX_RESOLVER/$NGINX_RESOLVER/g" -e "s#/var/www/wasteflow#$WEB_ROOT#g" "$NGINX_TEMPLATE" > "$CONF"
 
 ln -sfn "$RELEASE" "$WEB_ROOT/current.new"
 mv -T "$WEB_ROOT/current.new" "$WEB_ROOT/current"

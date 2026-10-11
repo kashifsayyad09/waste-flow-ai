@@ -187,3 +187,12 @@ def test_nothing_is_written_to_disk(ai_client, tmp_path, monkeypatch):
     before = set(os.listdir(tmp_path))
     post(ai_client(groq=reply('{"category": "glass", "explanation": "x"}')), img_bytes())
     assert set(os.listdir(tmp_path)) == before
+
+
+def test_image_above_the_pixel_ceiling_is_rejected_before_decoding(monkeypatch):
+    from app.ai import classifier
+
+    monkeypatch.setattr(classifier, "MAX_PIXELS", 10_000)  # 200x120 = 24,000 px
+    with pytest.raises(AIError) as e:
+        classifier.prepare_image(img_bytes(), "image/jpeg", 3 * 1024 * 1024)
+    assert e.value.status_code == 413 and e.value.code == "image_too_large"

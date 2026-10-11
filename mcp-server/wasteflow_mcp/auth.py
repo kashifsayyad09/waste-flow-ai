@@ -19,4 +19,8 @@ class BearerTokenMiddleware:
                     (b"content-type", b"application/json"), (b"www-authenticate", b"Bearer")]})
                 await send({"type": "http.response.body", "body": b'{"error":"unauthorized"}'})
                 return
+        elif scope["type"] == "websocket":
+            # The MCP transport is plain HTTP; refuse any websocket upgrade instead of letting it bypass auth.
+            await send({"type": "websocket.close", "code": 1008})
+            return
         await self.app(scope, receive, send)

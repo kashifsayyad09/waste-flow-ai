@@ -156,8 +156,11 @@ def test_production_nginx_routes_match_backend_routes():
     from app.main import app
 
     conf = code_only(read_utf8(DEPLOY / "nginx" / "wasteflow-frontend.conf.template"))
-    assert re.search(r"location\s+/api/\s*\{[^}]*proxy_pass\s+http://wasteflow_backend;", conf, re.S)  # no URI part: path preserved
-    assert re.search(r"location\s+=\s+/health\s*\{[^}]*proxy_pass\s+http://wasteflow_backend;", conf, re.S)
+    assert re.search(r"location\s+/api/\s*\{[^}]*proxy_pass\s+http://\$wasteflow_backend;", conf, re.S)  # no URI part: path preserved
+    assert re.search(r"location\s+=\s+/health\s*\{[^}]*proxy_pass\s+http://\$wasteflow_backend;", conf, re.S)
+    # variable proxy_pass => Nginx re-resolves a DNS-name backend (e.g. an internal ALB) instead of caching it forever
+    assert re.search(r"resolver\s+NGINX_RESOLVER\s+valid=\d+s", conf)
+    assert re.search(r'set\s+\$wasteflow_backend\s+"BACKEND_PRIVATE_HOST:8000";', conf)
     assert "try_files $uri $uri/ /index.html;" in conf  # SPA fallback
     for h in ("Host", "X-Real-IP", "X-Forwarded-For", "X-Forwarded-Proto"):
         assert f"proxy_set_header {h}" in conf

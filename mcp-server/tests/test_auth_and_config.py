@@ -73,3 +73,19 @@ def test_http_app_requires_token_and_valid_host():
         assert authed.status_code != 401  # passes auth (the empty JSON body is then rejected by MCP itself)
         evil = client.post("/mcp", json={}, headers={"Authorization": f"Bearer {TOKEN}", "Host": "evil.example"})
         assert evil.status_code in (400, 403, 421)  # DNS-rebinding protection
+
+
+def test_websocket_scopes_are_refused_not_passed_through():
+    reached = []
+
+    async def inner(scope, receive, send):
+        reached.append(scope["type"])
+
+    mw = BearerTokenMiddleware(inner, TOKEN)
+    out = []
+
+    async def send(msg):
+        out.append(msg)
+
+    asyncio.run(mw({"type": "websocket", "headers": [(b"authorization", f"Bearer {TOKEN}".encode())]}, None, send))
+    assert reached == [] and out == [{"type": "websocket.close", "code": 1008}]

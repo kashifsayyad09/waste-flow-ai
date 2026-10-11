@@ -10,4 +10,5 @@ python-multipart>=0.0.9 # FastAPI file uploads
 pymysql>=1.1
 cryptography>=42        # PyMySQL needs it for MySQL 8 caching_sha2_password auth
 pytest>=8.0
-httpx>=0.27
+httpx>=0.27             # used by tests (and by the groq SDK)
+httpx2>=2.10,<3         # imported by app/ai/mcp_client.py; the MCP SDK 2.x transport requires httpx2.AsyncClient, NOT httpx

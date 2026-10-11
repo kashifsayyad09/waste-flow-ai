@@ -80,6 +80,8 @@ def prepare_image(raw: bytes, declared_mime: str | None, max_bytes: int) -> byte
     try:
         with Image.open(io.BytesIO(raw)) as probe:
             fmt = probe.format
+            if probe.width * probe.height > MAX_PIXELS:
+                raise AIError("image_too_large", "The image dimensions are too large.", 413)
             probe.verify()  # structural check without full decode
         if fmt not in ALLOWED_FORMATS:
             raise AIError("unsupported_image_type", "Only JPEG, PNG or WebP images are accepted.", 415)
