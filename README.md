@@ -1,254 +1,477 @@
-# WasteFlow AI
+# WasteFlow AI — Complete AWS Rebuild & Operations Guide
 
-*From waste data to the next collection decision.*
+> **Purpose:** Recreate the WasteFlow AI application from a fresh AWS account/VPC, or troubleshoot the existing deployment. This documents the **observed deployed topology** (three EC2 instances and two Application Load Balancers), which differs from some older repository deployment instructions. **Never commit real passwords, Groq API keys, MCP bearer tokens, or SSH private keys.**
 
-## Problem
+**Repository:** https://github.com/kashifsayyad09/waste-flow-ai  
+**Region used in original deployment:** `us-east-1`  
+**Original public entry point (may change if resources are recreated):** `http://wasteflow-external-alb-751904982.us-east-1.elb.amazonaws.com`  
+**Current TLS status:** HTTP only; configure ACM + HTTPS before production use.
 
-Collection teams have more bins than trucks. Bins overflow when they are collected in the wrong order, and a plain "full / not full" dashboard does not say which bin to empty first or why.
+## 1. What the application does
 
-## Solution
+WasteFlow AI helps waste collection teams prioritize bins with an explainable **0–100** score. The priority engine is deterministic, not LLM-generated. The React dashboard displays bins and collection priorities; FastAPI exposes REST endpoints; MySQL stores bins and collection records. Groq-hosted AI supports chat and waste-image features, while a Model Context Protocol (MCP) server supplies application tools/data to the assistant. Route optimization with real GPS routing and live IoT sensors are **future improvements**, not prerequisites for this deployment.
 
-WasteFlow AI turns bin readings (fill level, waste type, temperature, time since collection, predicted overflow) into a 0–100 priority score, a priority level, and a ranked collection order, with the reasons for each.
+**Components:** React 19 + TypeScript + Vite 8; Nginx; Python 3.11+ + FastAPI + Uvicorn; SQLAlchemy/PyMySQL; MySQL 8.x on Amazon RDS; MCP server; Groq API; Amazon EC2, VPC, security groups, and two ALBs.
 
-## Core Feature
+## 2. Deployed architecture
 
-A **deterministic, explainable priority engine** (`backend/app/services/priority_engine.py`). The same bin always gets the same score. No LLM, no randomness.
+```text
+Internet / Browser
+       |
+       v
+External internet-facing ALB :80 (wasteflow-external-alb)
+       |
+       v
+Frontend EC2 :80 (Nginx, React static build)
+       | /api/* and /health reverse proxy
+       v
+Internal ALB :80 (wasteflow-internal-alb)
+       |
+       v
+Backend EC2 :8000 (FastAPI, wasteflow-backend.service)
+       |                             \
+       | TCP 3306                     \ MCP HTTP :8001
+       v                               v
+Amazon RDS MySQL                   MCP EC2 (read-only tools)
+                                       |
+                                       +--> RDS MySQL (read-only DB user)
 
-| Factor | Max points | Behaviour |
-|---|---|---|
-| Fill level | 45 | Rises through bands: 0–50% low, 50–75% moderate, 75–90% high, 90–100% critical |
-| Estimated overflow | 20 | ≤2h 20, ≤6h 16, ≤12h 9, ≤24h 4, otherwise 0 |
-| Days since collection | 15 | 0 → 0, 1 → 6, 2 → 12, 3+ → 15 |
-| Waste type | 10 | Organic 10, mixed 5, plastic/paper 3, glass 2 |
-| Temperature | 10 | Heat adds more for organic waste (≥35°C: 10 vs 4; ≥30°C: 6 vs 2) |
-
-Levels: 0–39 LOW · 40–69 MEDIUM · 70–84 HIGH · 85–100 CRITICAL.
-Every result lists its `reasons` (strongest first) and a per-factor `breakdown`.
-
-## Phase 2
-
-Bin data now lives in **AWS RDS for MySQL** instead of in-memory mock data. The priority engine, API contracts, Nginx and the React UI are unchanged.
-
-- Database structure is defined **only** by [`schema.sql`](schema.sql), imported manually. No migrations, and the app never creates or alters tables.
-- SQLAlchemy 2.x + PyMySQL for application-level access.
-- New: `GET/POST /api/v1/collections` to record a collection (updates the bin in one transaction).
-- `/health` now checks database connectivity.
-
-Still excluded: AI, route optimization, Docker, CI/CD, authentication, and any AWS service other than RDS.
-
-## Architecture
-
-```
-Browser
-   ↓
-React (Vite)
-   ↓  /api/*
-Nginx :80
-   ↓
-FastAPI :8000
-   ↓  SQLAlchemy + PyMySQL (port 3306)
-AWS RDS MySQL
-   ↓
-Deterministic Priority Engine
+Backend EC2 --> Groq API over outbound HTTPS :443
 ```
 
-Only FastAPI talks to the database. The browser and React never see database credentials, and database traffic never goes through Nginx.
+**Important:** The checked-in `deploy/README.md` describes a different/older deployment in which MCP shares the backend instance on `127.0.0.1:8001`, and its frontend script uses a direct backend host. The **actual deployed setup** has a separate MCP EC2 and frontend Nginx proxies to the **internal ALB**. Adjust those templates/scripts accordingly; do not blindly run them unchanged.
 
-## AWS RDS Setup
+### Original deployment reference (not portable IDs)
 
-You create the RDS instance manually in the AWS console (no Terraform/CloudFormation/CDK).
-
-1. Open **AWS Console → RDS → Create database**.
-2. Choose **Standard create** and engine **MySQL** (8.0 or 8.4). Not MariaDB or Aurora.
-3. Template: **Free tier** (if offered) or **Dev/Test**.
-4. **DB instance identifier:** e.g. `wasteflow-db`.
-5. **Credentials:** pick a master username (e.g. `admin`) and a strong password. Store the password in a password manager, not in the repo.
-6. Instance class: a small burstable one (e.g. `db.t3.micro` / `db.t4g.micro`). Storage: 20 GiB gp3 is plenty.
-7. **Connectivity:**
-   - VPC: default is fine for development.
-   - **Public access:** *Yes* only for local development from your laptop; *No* for anything else (see Production below).
-   - **VPC security group:** create new, e.g. `wasteflow-rds-sg`.
-8. Expand **Additional configuration** and set **Initial database name** to `wasteflow`. This creates the database for you.
-9. Click **Create database** and wait until the status is **Available**.
-10. Open the instance → **Connectivity & security** and copy the **Endpoint** (like `wasteflow-db.xxxxxxxx.<region>.rds.amazonaws.com`).
-
-### Network access (security group)
-
-The machine running FastAPI must be able to reach the endpoint on **TCP 3306**.
-
-**Local development (public access = Yes):**
-1. EC2 → **Security Groups** → select `wasteflow-rds-sg` → **Inbound rules → Edit**.
-2. Add rule: Type **MySQL/Aurora** (TCP 3306), Source **My IP**. AWS fills in your current public IP as `x.x.x.x/32`.
-3. If your IP changes (home/office/VPN), update the rule. Remove it when you stop working.
-
-**Never open 3306 to `0.0.0.0/0`.** Always use a specific IP or another security group as the source.
-
-**Production (not implemented in Phase 2):** set Public access to **No**, run the backend inside the same VPC, and allow 3306 only from the backend's security group.
-
-### Encrypted connection (recommended)
-
-Download the AWS RDS CA bundle (`https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem`), save it somewhere on your machine and set `DB_SSL_CA` to its path in `backend/.env`.
-
-## Schema Setup
-
-You need the `mysql` command-line client (or MySQL Workbench) on your machine.
-
-If you set **Initial database name** to `wasteflow` in step 8, the database already exists. **Skip the CREATE DATABASE step.** Otherwise connect and run:
-
-```sql
-CREATE DATABASE wasteflow
-CHARACTER SET utf8mb4
-COLLATE utf8mb4_unicode_ci;
-```
-
-Then import the schema and demo data from the repo root (the command prompts for the password, so it never appears in your shell history):
-
-```
-mysql -h <RDS_ENDPOINT> -P 3306 -u <USERNAME> -p wasteflow < schema.sql
-```
-
-PowerShell does not support `<` redirection; use `cmd /c "mysql -h <RDS_ENDPOINT> -P 3306 -u <USERNAME> -p wasteflow < schema.sql"`.
-
-`schema.sql` is safe to re-import: it uses `CREATE TABLE IF NOT EXISTS` and `INSERT IGNORE`, never drops anything, and does not overwrite existing rows. It creates two tables:
-
-| Table | Purpose |
+| Resource | Original value |
 |---|---|
-| `bins` | One row per bin: location, fill level, waste type, temperature, timing, status. Primary key `id`. |
-| `collection_records` | Collection history. `bin_id` → `bins.id` (foreign key, `ON DELETE RESTRICT`). |
+| Frontend EC2 private IP | `10.0.2.80` |
+| Backend EC2 private IP | `10.0.4.96` |
+| MCP EC2 private IP | `10.0.5.89` |
+| External ALB DNS | `wasteflow-external-alb-751904982.us-east-1.elb.amazonaws.com` |
+| Internal ALB DNS | `internal-wasteflow-internal-alb-1557040077.us-east-1.elb.amazonaws.com` |
+| Backend target group | `wasteflow-backend-tg` -> backend port `8000` |
+| Frontend target group | `wasteflow-frontend-tg` -> frontend port `80` |
+| RDS endpoint | `database-1.cojs2queopr9.us-east-1.rds.amazonaws.com` |
+| Database name | `wasteflow` |
+| Text model used in deployment | `openai/gpt-oss-20b` |
+| Vision model used in deployment | `qwen/qwen3.8-27b` (confirm exact model ID and availability in your Groq account) |
+| MCP URL in original topology | `http://10.0.5.89:8001/mcp` |
 
-It also seeds 10 Hyderabad bins that produce 2 CRITICAL, 1 HIGH, 2 MEDIUM and 5 LOW priorities, so the dashboard has data immediately.
+IPs, DNS names, security group IDs, model availability and instance IDs are **environment-specific**. Replace them when recreating resources. Use private DNS names or service discovery rather than hard-coded private IPs when possible.
 
-Optional but recommended: give the app its own least-privilege user instead of the master user.
+## 3. Prerequisites
+
+1. AWS account with permission to create VPC, subnets, EC2, ALBs, target groups, security groups, RDS, and IAM roles.
+2. One VPC with subnets across **at least two Availability Zones** for ALBs and RDS subnet groups. Use public subnets for the external ALB, and private subnets for internal ALB, backend, MCP and RDS. Plan outbound NAT/VPC endpoints as needed.
+3. Three **Amazon Linux 2023** EC2 instances: frontend, backend, MCP. Size based on your workload; confirm current AWS pricing.
+4. A private RDS MySQL 8.x instance with DB name `wasteflow`, automated backups, and encryption.
+5. Git, Python **3.11+**, Node **22.12+** (or a compatible `^20.19`), Nginx, MySQL/MariaDB CLI, and an API key from Groq.
+6. Prefer SSM Session Manager for administration. Use IAM instance profiles rather than storing AWS access keys on instances.
+
+## 4. VPC and security groups
+
+Create separate security groups. The following is the **recommended minimal HTTP-based network design**, not an assertion that all these exact rules are currently present:
+
+| Security group | Required inbound rules |
+|---|---|
+| External ALB SG | TCP `80` from `0.0.0.0/0` (add `443` when TLS configured) |
+| Frontend EC2 SG | TCP `80` **from external ALB SG** |
+| Internal ALB SG | TCP `80` **from frontend EC2 SG** |
+| Backend EC2 SG | TCP `8000` **from internal ALB SG** |
+| MCP EC2 SG | TCP `8001` **from backend EC2 SG only** |
+| RDS SG | TCP `3306` **from backend EC2 SG and MCP EC2 SG** |
+
+Outbound rules must allow the corresponding response/application connections; backend needs HTTPS `443` to Groq and package repositories (via NAT where required). Avoid public access to ports `8000`, `8001`, `3306`. For MCP, require a bearer token even on the private network; prefer HTTPS or another protected channel for inter-instance traffic in production.
+
+**Original security group IDs for reference:** external ALB `sg-0fab11d81c40e8b20`, frontend `sg-03d1763085b624592`, internal ALB `sg-0a501b73fd206a4de`, backend `sg-0e32a4f9d662ce02e`. These IDs will be different after recreation.
+
+## 5. Clone the source code
+
+On each instance that needs code (or on a CI/build machine):
+
+```bash
+sudo dnf update -y
+sudo dnf install -y git
+cd ~
+git clone https://github.com/kashifsayyad09/waste-flow-ai.git
+cd waste-flow-ai
+```
+
+Relevant repository files:
+
+```text
+schema.sql                           # MySQL schema and demo rows
+backend/requirements.txt             # FastAPI dependencies
+backend/.env.example                 # backend configuration template
+backend/app/main.py                  # API application
+backend/app/services/priority_engine.py
+mcp-server/requirements.txt          # MCP dependencies
+mcp-server/.env.example              # MCP configuration template
+frontend/package.json                # React/Vite scripts
+nginx/nginx.conf                     # LOCAL development config (not production)
+deploy/README.md                     # older deployment reference
+ deploy/backend/*                     # backend systemd/deploy helpers
+ deploy/frontend/*                    # frontend deploy helpers
+ deploy/nginx/*                       # frontend Nginx template
+ docs/phase3-ai.md                    # AI/MCP details
+```
+
+## 6. Create and initialize RDS MySQL
+
+In **AWS Console → RDS → Create database**:
+
+- Engine: **MySQL 8.x** (original was MySQL 8.4.x).
+- Database: `wasteflow`.
+- VPC: same VPC as backend/MCP EC2.
+- **Publicly accessible: No**.
+- DB subnet group: private subnets spanning at least two AZs.
+- Security group: allow `3306` from backend and MCP security groups.
+- Enable encryption at rest and automated backups; store master credentials securely.
+
+On a machine that can reach the RDS endpoint (such as backend EC2):
+
+```bash
+sudo dnf install -y mariadb105
+sudo mkdir -p /etc/wasteflow/certs
+sudo curl -fsSL https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem \
+  -o /etc/wasteflow/certs/global-bundle.pem
+# From the cloned repo root; enter the password interactively:
+mysql -h <NEW_RDS_ENDPOINT> -P 3306 -u <MASTER_USER> -p \
+  --ssl-ca=/etc/wasteflow/certs/global-bundle.pem wasteflow < schema.sql
+```
+
+If the `wasteflow` database was not created at instance creation, create it first with `CREATE DATABASE wasteflow CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;`.
+
+Create **separate database users** (replace placeholders; use a secure interactive client and do not commit SQL containing passwords):
 
 ```sql
-CREATE USER 'wasteflow_app'@'%' IDENTIFIED BY '<STRONG_PASSWORD>';
+CREATE USER 'wasteflow_app'@'%' IDENTIFIED BY '<STRONG_APP_PASSWORD>';
 GRANT SELECT, UPDATE ON wasteflow.bins TO 'wasteflow_app'@'%';
 GRANT SELECT, INSERT ON wasteflow.collection_records TO 'wasteflow_app'@'%';
+
+CREATE USER 'wasteflow_mcp'@'%' IDENTIFIED BY '<STRONG_READONLY_PASSWORD>';
+GRANT SELECT ON wasteflow.* TO 'wasteflow_mcp'@'%';
 ```
 
-## Backend Configuration
+Verify:
 
-Copy `backend/.env.example` to `backend/.env` and fill in your values. `backend/.env` is the **only** `.env` file in the project and is git-ignored.
-
+```bash
+mysql -h <NEW_RDS_ENDPOINT> -u <MASTER_USER> -p wasteflow \
+  -e 'SHOW TABLES; SELECT COUNT(*) AS bin_count FROM bins;'
 ```
-APP_ENV=development
-HOST=127.0.0.1
+
+**Data preservation:** `schema.sql` seeds demo data. If rebuilding a real deployment, restore from a tested RDS backup/snapshot instead of assuming demo seed data represents the current database.
+
+## 7. Backend EC2 — FastAPI on port 8000
+
+Install Python and dependencies:
+
+```bash
+sudo dnf install -y python3.11 python3.11-pip git
+cd ~/waste-flow-ai/backend
+python3.11 -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+Create a protected backend environment file, based on `backend/.env.example`:
+
+```dotenv
+APP_ENV=production
+HOST=0.0.0.0
 PORT=8000
-CORS_ORIGINS=http://localhost,http://localhost:5173
-
-DB_HOST=<RDS_ENDPOINT>
+CORS_ORIGINS=http://<EXTERNAL_ALB_DNS>
+DB_HOST=<NEW_RDS_ENDPOINT>
 DB_PORT=3306
 DB_NAME=wasteflow
-DB_USER=<USERNAME>
-DB_PASSWORD=<PASSWORD>
-# DB_SSL_CA=/path/to/global-bundle.pem
+DB_USER=wasteflow_app
+DB_PASSWORD=<STRONG_APP_PASSWORD>
+DB_SSL_CA=/etc/wasteflow/certs/global-bundle.pem
+GROQ_API_KEY=<YOUR_GROQ_API_KEY>
+GROQ_TEXT_MODEL=openai/gpt-oss-20b
+GROQ_VISION_MODEL=<AVAILABLE_GROQ_VISION_MODEL_ID>
+MCP_SERVER_URL=http://<MCP_PRIVATE_IP_OR_DNS>:8001/mcp
+MCP_API_TOKEN=<GENERATED_SHARED_TOKEN>
 ```
 
-While `DB_HOST`/`DB_USER` are still placeholders, the API answers `503 Database unavailable` and `/health` reports `unhealthy`.
+**Do not commit this file.** In production use `/etc/wasteflow/backend.env` with owner `root:wasteflow` and mode `0640`, as described in `deploy/README.md`. The sample `HOST=0.0.0.0` is needed when ALB targets the backend private IP; the checked-in example uses loopback for local development.
 
-## Local Setup
+Generate MCP token:
 
-Run three processes, each in its own terminal.
-
-**1. FastAPI**
-
+```bash
+python3.11 -c 'import secrets; print(secrets.token_urlsafe(48))'
 ```
-cd backend
-python -m venv venv
-venv\Scripts\activate          # Windows
-source venv/bin/activate       # macOS / Linux
+
+Use the same generated token on backend and MCP, stored only in protected environment files. **Do not use the sample placeholder as a token.**
+
+For an initial manual smoke test (from the backend directory, with environment variables loaded securely):
+
+```bash
+.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
+```
+
+For persistent operation use the checked-in `deploy/backend/wasteflow-backend.service` and `deploy/backend/deploy-backend.sh`, **after checking their paths and assumptions**. The repository's deployment helper also expects MCP to run locally; adapt it for a separate MCP EC2 or deploy the backend independently. Never run a script unchanged without reviewing it against this topology.
+
+Check service:
+
+```bash
+sudo systemctl status wasteflow-backend --no-pager
+sudo journalctl -u wasteflow-backend -n 100 --no-pager
+curl -s http://127.0.0.1:8000/health
+curl -s http://127.0.0.1:8000/api/v1/ai/status
+```
+
+Expected healthy backend includes `"status":"ok"` and `"database":"connected"`.
+
+## 8. MCP EC2 — separate tool server on port 8001
+
+The repository's original Phase 3 guide assumes MCP is colocated with the backend. For this deployed topology, install MCP on **its own EC2** and bind it to a private interface.
+
+```bash
+sudo dnf install -y git python3.11 python3.11-pip
+cd ~/waste-flow-ai/mcp-server
+python3.11 -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
-uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
-(`--reload` is fine while developing.)
+Create a **protected** MCP environment file from `mcp-server/.env.example`:
 
-**2. React / Vite**
-
-```
-cd frontend
-npm install
-npm run dev
-```
-
-**3. Nginx** (from the repo root; port 80 needs admin rights on macOS/Linux)
-
-```
-sudo nginx -p "$PWD/nginx/" -c nginx.conf       # macOS / Linux
-nginx -p "$PWD/nginx/" -c nginx.conf            # Windows PowerShell
-```
-
-Locally, Nginx (optional) proxies `/api/*` and `/health` to FastAPI and `/` to Vite. `npm run dev` on its own also works: the Vite dev proxy forwards `/api` and `/health` straight to FastAPI on `127.0.0.1:8000`. Production uses neither: see [`deploy/README.md`](deploy/README.md). Local Nginx details: [`nginx/README.md`](nginx/README.md).
-
-- App (via Nginx): http://localhost
-- Health: http://localhost/health → `{"status":"ok","database":"connected",...}`
-- Swagger (direct to FastAPI, local only): http://127.0.0.1:8000/docs
-
-The frontend API path lives in one constant, `API_BASE_PATH` in `frontend/src/services/api.ts`. There is no frontend `.env`.
-
-## API
-
-| Endpoint | Returns |
-|---|---|
-| `GET /health` | `200` with `database: connected`, or `503` with `status: unhealthy` (never any connection details) |
-| `GET /api/v1/bins` | all bins from MySQL |
-| `GET /api/v1/bins/{bin_id}` | one bin (`404` if unknown) |
-| `GET /api/v1/priorities` | score, level, reasons per bin, highest first |
-| `GET /api/v1/collection-plan` | ranked collection order with reasons |
-| `GET /api/v1/collections?bin_id=&limit=` | collection history, newest first |
-| `POST /api/v1/collections` | record a collection (`201`) |
-
-`POST /api/v1/collections` body: `{"bin_id": "BIN-004", "collected_at": "optional ISO time (UTC)", "collection_status": "completed|skipped|failed", "notes": "optional"}`.
-In a single transaction it inserts the record and, for `completed`, sets the bin's `last_collected`, `days_since_collection = 0`, `fill_level = 0`, `estimated_overflow_time = 72` and `status = normal`. `skipped`/`failed` are recorded without touching the bin. A back-dated entry never moves `last_collected` backwards.
-
-The collection plan is a priority order only; GPS route optimization is a later phase.
-
-## Phase 3: AI
-
-Adds a **Groq-powered AI Collection Assistant** and **waste-photo classification**, with a separate **MCP server** that gives the assistant read-only access to the live RDS data and the deterministic priority engine. The engine still decides all scores; the AI only explains them. Full guide: [`docs/phase3-ai.md`](docs/phase3-ai.md).
-
-```
-React → Nginx → FastAPI ──▶ Groq API
-                   └──▶ MCP server (bearer auth, read-only tools) ──▶ AWS RDS MySQL + priority engine
+```dotenv
+APP_ENV=production
+MCP_HOST=0.0.0.0
+MCP_PORT=8001
+MCP_API_TOKEN=<SAME_GENERATED_SHARED_TOKEN_AS_BACKEND>
+DB_HOST=<NEW_RDS_ENDPOINT>
+DB_PORT=3306
+DB_NAME=wasteflow
+DB_USER=wasteflow_mcp
+DB_PASSWORD=<STRONG_READONLY_PASSWORD>
+DB_SSL_CA=/etc/wasteflow/certs/global-bundle.pem
+# Set MCP_ALLOWED_HOSTS to the private hostname(s) actually used, if required by host validation.
 ```
 
-New endpoints: `POST /api/v1/ai/chat`, `POST /api/v1/ai/classify-waste`, `GET /api/v1/ai/status`. New backend variables: `GROQ_API_KEY`, `GROQ_TEXT_MODEL`, `GROQ_VISION_MODEL`, `MCP_SERVER_URL`, `MCP_API_TOKEN` (placeholders in `backend/.env.example`; the key never reaches the browser). Run the MCP server with `cd mcp-server && python -m wasteflow_mcp`, and check your Groq account with `python backend/scripts/check_groq.py --live`. AI features report "not configured" until the keys and model IDs are set.
+**Security note:** `0.0.0.0` means listen on all interfaces. Use it **only** with SG inbound `8001` restricted to the backend SG, bearer-token authentication, and preferably encrypted transport. If the MCP server supports binding directly to the private IP, use that instead. Check `docs/phase3-ai.md` and actual MCP server host validation for your deployed version.
 
-## Deployment (AWS)
+Start manually for testing:
 
-Production layout is **Frontend EC2 (Nginx + static build) → Backend EC2 (Uvicorn under systemd) → private RDS MySQL**. Full Amazon Linux instructions, security groups, rollback and password-rotation steps: [`deploy/README.md`](deploy/README.md).
-
-## Tests
-
-```
-cd backend
-pytest                       # everything; integration tests skip if no database is reachable
-pytest -m "not integration"  # unit tests only, no database needed
-pytest -m integration        # database tests only
+```bash
+cd ~/waste-flow-ai/mcp-server
+.venv/bin/python -m wasteflow_mcp
 ```
 
-MCP server: `cd mcp-server && pytest`.
+Create a dedicated systemd unit on the MCP instance based on the repository's `deploy/backend/wasteflow-mcp.service`, but **edit the paths, user, environment file and working directory** for the separate instance before enabling it.
 
-Frontend (from `frontend/`):
+From backend EC2, test reachability (unauthenticated requests should not return successful tool data):
 
+```bash
+curl -i -X POST http://<MCP_PRIVATE_IP_OR_DNS>:8001/mcp
 ```
+
+A `401` without a token is a useful authentication check; the MCP protocol may also validate request headers and return other 4xx responses.
+
+## 9. Internal ALB — backend routing
+
+In **EC2 → Target Groups** create:
+
+- Name: `wasteflow-backend-tg`
+- Target type: **Instance** (or IP, if intentionally using IP targets)
+- Protocol/port: HTTP `8000`
+- Register backend EC2 on port `8000`
+- Health check path: `/health`; success `200`
+
+Then in **EC2 → Load Balancers** create an **Application Load Balancer**:
+
+- Name: `wasteflow-internal-alb`
+- Scheme: **Internal**
+- VPC: application VPC; subnets across at least two AZs
+- Listener: HTTP `80` -> `wasteflow-backend-tg`
+- SG: port `80` from frontend SG
+
+Wait for target status **healthy**. Check from frontend EC2:
+
+```bash
+curl -i http://<INTERNAL_ALB_DNS>/health
+curl -i http://<INTERNAL_ALB_DNS>/api/v1/ai/status
+```
+
+## 10. Frontend EC2 — Nginx and React
+
+```bash
+sudo dnf install -y git nginx
+sudo systemctl enable --now nginx
+node --version
+npm --version
+```
+
+Install Node 22.12+ if not already present; ensure `node --version` meets `frontend/package.json` engine requirements. Build:
+
+```bash
+cd ~/waste-flow-ai/frontend
 npm ci
-npm run typecheck
-npm test                     # UI tests with fixture API responses
 npm run build
-WASTEFLOW_LIVE_API=http://127.0.0.1:8000 npm test   # same checks against a running, database-backed backend
+sudo mkdir -p /usr/share/nginx/html
+sudo cp -a dist/. /usr/share/nginx/html/
 ```
 
-- `tests/unit/`: priority engine, API behaviour with sample data, health responses, URL/secret handling, and project rules (no `create_all`, no migration framework, no frontend `.env`).
-- `tests/integration/`: run against the MySQL in `backend/.env`. Checks the connection, that the SQLAlchemy models match the real tables and foreign key, bins/priorities/plan from database rows, and collection creation. Every test runs inside a transaction that is rolled back, so your data is never changed and the database never needs recreating.
+The **observed deployed frontend** serves `/usr/share/nginx/html` (the repo's deployment script may instead use `/var/www/wasteflow/current`). Keep Nginx `root` consistent with your actual build destination.
 
-## Security
+Create `/etc/nginx/conf.d/wasteflow.conf` and replace `<INTERNAL_ALB_DNS>`:
 
-- Never commit the RDS password or any credential. `backend/.env` is in `.gitignore`; `backend/.env.example` holds placeholders only.
-- Credentials exist only in `backend/.env`: not in the frontend, `schema.sql`, `nginx.conf`, this README, or source code.
-- API error responses and `/health` never include usernames, passwords, hostnames or connection strings.
-- Do not expose RDS to `0.0.0.0/0`.
+```nginx
+server {
+    listen 80;
+    server_name _;
+    root /usr/share/nginx/html;
+    index index.html;
 
-## Design
+    location /api/v1/ai/ {
+        client_max_body_size 5m;
+        proxy_pass http://<INTERNAL_ALB_DNS>;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_connect_timeout 10s;
+        proxy_read_timeout 90s;
+        proxy_send_timeout 90s;
+    }
 
-The UI follows `design.md` (dark canvas, Jersey 10 + Roboto, orange accent, sharp corners, hard offset shadows).
+    location /api/ {
+        proxy_pass http://<INTERNAL_ALB_DNS>;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location = /health {
+        proxy_pass http://<INTERNAL_ALB_DNS>;
+        proxy_set_header Host $host;
+    }
+
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}
+```
+
+**Nginx warning:** Amazon Linux's stock `/etc/nginx/nginx.conf` may already define a default server on port 80. Ensure your new server handles the intended host and remove/adjust any conflicting default server block. If SELinux is enforcing and proxy requests fail, check SELinux logs; where appropriate, `sudo setsebool -P httpd_can_network_connect 1` may be required.
+
+```bash
+sudo nginx -t
+sudo systemctl reload nginx
+curl -I http://127.0.0.1/
+curl -i http://127.0.0.1/health
+```
+
+**Do not point the frontend browser directly at the internal ALB DNS**: browsers outside the VPC cannot reach it. Browser calls should use relative `/api/...` paths through the external website origin.
+
+## 11. External ALB — public website
+
+Create target group:
+
+- Name: `wasteflow-frontend-tg`
+- Protocol/port: HTTP `80`
+- Register frontend EC2 on port `80`
+- Health check path: `/` (expects `200`)
+
+Create **internet-facing Application Load Balancer**:
+
+- Name: `wasteflow-external-alb`
+- Scheme: **Internet-facing**
+- Public subnets in at least two AZs
+- Listener: HTTP `80` -> `wasteflow-frontend-tg`
+- SG: inbound `80` from internet
+
+Wait for the frontend target to become healthy. Use the **new** external ALB DNS if recreating the resources. Original example:
+
+```text
+http://wasteflow-external-alb-751904982.us-east-1.elb.amazonaws.com
+```
+
+## 12. End-to-end verification
+
+Run from your laptop (replace `<PUBLIC_ALB_DNS>`):
+
+```bash
+curl -I http://<PUBLIC_ALB_DNS>/
+curl -i http://<PUBLIC_ALB_DNS>/health
+curl -i http://<PUBLIC_ALB_DNS>/api/v1/bins
+curl -i http://<PUBLIC_ALB_DNS>/api/v1/priorities
+curl -i http://<PUBLIC_ALB_DNS>/api/v1/collection-plan
+curl -i http://<PUBLIC_ALB_DNS>/api/v1/ai/status
+```
+
+Expected:
+
+- Website returns HTTP `200` and loads in a browser.
+- `/health` returns healthy status and database connected.
+- `/api/v1/ai/status` reports chat/classification availability and MCP configuration when credentials/models are valid.
+- AI assistant can retrieve priorities via MCP (example test: BIN-004 previously returned priority `97`, but data can change).
+- Both ALB target groups show **healthy** registered targets.
+
+Test frontend and backend directly **from their respective instances** if public requests fail.
+
+## 13. Troubleshooting
+
+| Symptom | Checks |
+|---|---|
+| External ALB 503 / unhealthy target | Frontend EC2 port 80; SG from external ALB; `sudo nginx -t`; `systemctl status nginx`; target health path `/` |
+| Website loads but `/api` returns 502 | Nginx `proxy_pass` must target internal ALB DNS; internal ALB SG; backend target health; backend listens on `0.0.0.0:8000` |
+| Backend unhealthy / database disconnected | RDS endpoint, `3306` SG, private routing, DB credentials, database `wasteflow`, RDS CA bundle |
+| AI says unavailable | Check `GROQ_API_KEY`, valid model IDs, backend outbound HTTPS, `/api/v1/ai/status`, backend logs |
+| MCP tool calls fail | MCP EC2 running/listening on `8001`, SG source backend SG, matching token, `MCP_SERVER_URL`, allowed Host headers, MCP DB credentials |
+| SPA deep links show 404 | Ensure `try_files $uri $uri/ /index.html` |
+| Frontend updates not visible | Rebuild `npm ci && npm run build`, recopy `dist`, check browser caching |
+| Nginx duplicate default server | Inspect `/etc/nginx/nginx.conf` and `conf.d`; keep one appropriate default server |
+
+Useful commands:
+
+```bash
+sudo systemctl status nginx --no-pager
+sudo nginx -t
+sudo tail -n 100 /var/log/nginx/error.log
+sudo systemctl status wasteflow-backend --no-pager
+sudo journalctl -u wasteflow-backend -n 100 --no-pager
+ss -ltnp | grep -E ':80|:8000|:8001'
+```
+
+## 14. Security, production readiness and operations
+
+- **HTTPS is not yet configured in the original deployment.** Attach a domain name and ACM certificate to the external ALB, add an HTTPS `443` listener, and redirect HTTP to HTTPS. Tighten CORS and cookie policies accordingly.
+- Do not expose RDS, MCP or backend ports publicly.
+- Use separate least-privilege DB users; keep MCP database access read-only.
+- Keep `backend.env`, MCP env files, and Groq credentials outside Git. Prefer AWS Secrets Manager/SSM Parameter Store with IAM instance roles.
+- Rotate any secrets that have previously been shared in logs, screenshots, chat, or committed files.
+- Enable RDS backups; regularly test restore procedures. Add CloudWatch logs, metrics, alarms and access logs as appropriate.
+- Configure IAM roles, patching, monitoring, scaling and cost budgets before production use.
+- ALB target groups do **not** automatically make an app highly available with only one target per tier. Add more instances and autoscaling for HA.
+- An external ALB and an internal ALB, EC2 instances, NAT, and RDS incur AWS charges. Remove unused resources when done.
+
+## 15. Deployment checklist
+
+- [ ] VPC, public/private subnets, route tables and NAT/egress configured
+- [ ] Frontend, backend, MCP EC2 launched with Amazon Linux 2023
+- [ ] All six security group relationships configured
+- [ ] Private RDS MySQL provisioned, schema imported, least-privilege users created
+- [ ] Backend Python dependencies installed, protected env configured, service healthy
+- [ ] MCP dependencies installed, token matches backend, service reachable privately
+- [ ] Internal ALB listener, backend target group and `/health` check healthy
+- [ ] Frontend React built, Nginx static root and internal-ALB proxy configured
+- [ ] External ALB listener, frontend target group and `/` check healthy
+- [ ] Public site, `/health`, priorities, and AI status tested
+- [ ] HTTPS, secrets management, backups, monitoring and budget reviewed
+
+## 16. Further documentation
+
+- [Original project README](https://github.com/kashifsayyad09/waste-flow-ai/blob/main/README.md)
+- [Repository deployment scripts and instructions](https://github.com/kashifsayyad09/waste-flow-ai/tree/main/deploy)
+- [AI/MCP implementation notes](https://github.com/kashifsayyad09/waste-flow-ai/blob/main/docs/phase3-ai.md)
+- [Database schema](https://github.com/kashifsayyad09/waste-flow-ai/blob/main/schema.sql)
+
+---
+
+**Rebuild note:** The original AWS private IPs, resource IDs, and DNS names are included for orientation, **not** as fixed settings for a new installation. This guide combines checked-in repository instructions with details of the previously tested three-EC2/two-ALB deployment; review application configuration and deployment scripts against the current commit before using in production.
